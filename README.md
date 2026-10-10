@@ -11,6 +11,7 @@ This fork is maintained at [`sstadick/zed_mojo`](https://github.com/sstadick/zed
 - Syntax highlighting queries in `languages/mojo/highlights.scm`
 - Editor queries for bracket matching, indentation, outline, and Vim text objects
 - LSP integration for `mojo-lsp-server`
+- Document formatting with the matching Mojo environment's `mblack`
 - Go-to-definition into matching Mojo standard-library sources
 - Quick fixes to import missing symbols from the standard library, project, and installed packages
 - Mojo snippets in `snippets/mojo.json`
@@ -90,6 +91,24 @@ Omit `server.path` to use automatic project/PATH discovery. The bridge adds the 
 Do not use Zed's top-level `binary.path` or `binary.arguments` for these native-server options: `binary.path` bypasses the extension launcher entirely, and `binary.arguments` replaces the Python bridge's command-line arguments. Remove those overrides when migrating to the configuration above, then restart the language server. Setting `binary.path` to the native Mojo server intentionally disables the bridge's source download, import fixes, and crash protection.
 
 If autocomplete does not appear, first verify that Zed can start the server, then check `zed: open log` for LSP startup errors. Repeated `mojo-lsp-server failed: server shut down` messages mean the server process exited and Zed is still draining stale requests; reload the window to restart it.
+
+### Formatting with mblack
+
+The bridge exposes LSP document formatting when `mblack` is installed. It first looks next to the selected `mojo-lsp-server`, so each Pixi project automatically uses the formatter from its matching Mojo environment. It falls back to `mblack` on Zed's `PATH`. Formatting uses the current editor buffer through stdin, including unsaved changes; no project-specific Zed formatter configuration is needed.
+
+Use **Format Document** in Zed or enable formatting on save:
+
+```json
+{
+  "languages": {
+    "Mojo": {
+      "format_on_save": "on"
+    }
+  }
+}
+```
+
+If formatting remains unavailable, verify that `.pixi/envs/default/bin/mblack` exists (or that `mblack` is on Zed's `PATH`) and restart the Mojo language server. Parse failures from `mblack`, including failures caused by a formatter version lagging current Mojo syntax, are shown as formatting errors and do not modify the buffer.
 
 ### Native-server crashes
 

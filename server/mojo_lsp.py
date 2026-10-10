@@ -29,6 +29,7 @@ IDENTIFIER = r"[A-Za-z_][A-Za-z_0-9]*"
 UNKNOWN = re.compile(r"use of unknown declaration '(" + IDENTIFIER + r")'")
 IMPORT_HINT = re.compile(r"Add 'from ([A-Za-z_][\w.]*) import (" + IDENTIFIER + r")'")
 RECOVERY_TIMEOUT = 15
+FORMAT_TIMEOUT = 30
 SKIP_DIRS = {
     "target",
     "build",
@@ -145,6 +146,49 @@ def apply_changes(text, changes):
             start, end = offset(text, span["start"]), offset(text, span["end"])
             text = text[:start] + change["text"] + text[end:]
     return text
+
+
+def document_end(text):
+    """Return the LSP UTF-16 position immediately after a document."""
+    line, tail = text.count("\n"), text.rsplit("\n", 1)[-1]
+    return {
+        "line": line,
+        "character": sum(2 if ord(char) > 0xFFFF else 1 for char in tail),
+    }
+
+
+def find_formatter(server, environment):
+    """Prefer mblack from the same Mojo environment as the language server."""
+    name = "mblack.exe" if os.name == "nt" else "mblack"
+    adjacent = Path(server).with_name(name)
+    if adjacent.is_file() and (os.name == "nt" or os.access(adjacent, os.X_OK)):
+        return adjacent
+    found = shutil.which("mblack", path=environment.get("PATH"))
+    return Path(found) if found else None
+
+
+def format_document(formatter, path, text, workspace, environment):
+    result = subprocess.run(
+        [str(formatter), "--quiet", "--stdin-filename", str(path), "-"],
+        input=text,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=workspace,
+        env=environment,
+        timeout=FORMAT_TIMEOUT,
+    )
+    if result.returncode:
+        detail = result.stderr.strip() or f"mblack exited with status {result.returncode}"
+        raise ValueError(detail)
+    if result.stdout == text:
+        return []
+    return [
+        {
+            "range": {"start": {"line": 0, "character": 0}, "end": document_end(text)},
+            "newText": result.stdout,
+        }
+    ]
 
 
 def top_level_statements(text):
@@ -896,7 +940,7 @@ def backend_initialize(initialize):
     }
 
 
-def run_proxy(command, index, initialize, workspace, environment, client_input):
+def run_proxy(command, index, initialize, workspace, environment, formatter, client_input):
     initialize = backend_initialize(initialize)
     config = (initialize.get("params", {}).get("initializationOptions") or {}).get("zed_mojo", {})
     restart_limit = config.get("restart_limit", 2)
@@ -1113,6 +1157,26 @@ def run_proxy(command, index, initialize, workspace, environment, client_input):
                     state_notifications.append(message)
                 elif method == "textDocument/codeAction" and uri in documents:
                     pending[message["id"]] = (params, documents[uri])
+                elif method == "textDocument/formatting" and formatter is not None:
+                    if uri not in documents:
+                        fail_request(message["id"], -32602, "Document is not open")
+                    else:
+                        path = file_path(uri)
+                        if path is None:
+                            fail_request(message["id"], -32602, "mblack requires a file URI")
+                        else:
+                            try:
+                                edits = format_document(
+                                    formatter, path, documents[uri][1], workspace, environment
+                                )
+                                write_message(
+                                    sys.stdout.buffer,
+                                    {"jsonrpc": "2.0", "id": message["id"], "result": edits},
+                                )
+                                client_requests.discard(message["id"])
+                            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                                fail_request(message["id"], -32603, f"mblack failed: {error}")
+                    continue
                 elif method == "$/cancelRequest" and (
                     params.get("id") in jobs or params.get("id") in pending
                 ):
@@ -1188,6 +1252,10 @@ def run_proxy(command, index, initialize, workspace, environment, client_input):
                         continue
                     if message.get("id") == initialize["id"] and "error" not in message:
                         initialized = True
+                        if formatter is not None:
+                            result = message.setdefault("result", {})
+                            capabilities = result.setdefault("capabilities", {})
+                            capabilities["documentFormattingProvider"] = True
                 elif "id" in message:
                     server_requests.add(message["id"])
                 if method == "$/progress":
@@ -1244,7 +1312,12 @@ def main():
     command, index, environment = prepare(
         options.server, args, workspace, Path(options.cache), initialize
     )
-    return run_proxy(command, index, initialize, workspace, environment, client_input)
+    formatter = find_formatter(options.server, environment)
+    if formatter is None:
+        log("mblack was not found; document formatting is unavailable")
+    return run_proxy(
+        command, index, initialize, workspace, environment, formatter, client_input
+    )
 
 
 if __name__ == "__main__":

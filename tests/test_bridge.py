@@ -36,6 +36,45 @@ class EditingTests(unittest.TestCase):
         self.assertEqual(text, '# é\r\ndef main():\r\n    print("world")\r\n')
         self.assertEqual(bridge.apply_changes(text, [{"text": "replacement"}]), "replacement")
 
+    def test_mblack_formats_stdin_and_replaces_the_complete_document(self):
+        text = "fn main():\n    var message=\"😀\""
+        completed = subprocess.CompletedProcess([], 0, 'fn main():\n    var message = "😀"\n', "")
+        with patch.object(subprocess, "run", return_value=completed) as run:
+            edits = bridge.format_document(
+                Path("/env/bin/mblack"),
+                Path("/project/main.mojo"),
+                text,
+                Path("/project"),
+                {"PATH": "/env/bin"},
+            )
+        self.assertEqual(apply_edit(text, edits[0]), completed.stdout)
+        self.assertEqual(edits[0]["range"]["end"], position(1, 20))
+        run.assert_called_once_with(
+            [
+                "/env/bin/mblack",
+                "--quiet",
+                "--stdin-filename",
+                "/project/main.mojo",
+                "-",
+            ],
+            input=text,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=Path("/project"),
+            env={"PATH": "/env/bin"},
+            timeout=bridge.FORMAT_TIMEOUT,
+        )
+
+    def test_mblack_errors_are_not_applied(self):
+        completed = subprocess.CompletedProcess([], 123, "unformatted", "Cannot parse line 1")
+        with patch.object(subprocess, "run", return_value=completed), self.assertRaisesRegex(
+            ValueError, "Cannot parse line 1"
+        ):
+            bridge.format_document(
+                Path("mblack"), Path("main.mojo"), "broken", Path.cwd(), os.environ.copy()
+            )
+
     def test_insertion_preserves_header_docstring_and_multiline_imports(self):
         text = '#!/usr/bin/env mojo\r\n# License\r\n"""Module docs.\r\nMore docs."""\r\nfrom std.math import (\r\n    sin,\r\n)  # keep this\r\n\r\ndef main():\r\n    sqrt(1.0)\r\n'
         result = apply_edit(text, bridge.import_edit(text, "std.math", "sqrt"))
@@ -408,6 +447,22 @@ class SetupTests(unittest.TestCase):
             self.assertIn(library, index.roots)
             self.assertEqual(environment["MODULAR_MOJO_MAX_IMPORT_PATH"], str(sources))
 
+    def test_formatter_prefers_the_server_environment_then_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            server = root / "bin/mojo-lsp-server"
+            server.parent.mkdir()
+            local = server.with_name("mblack")
+            local.touch(mode=0o755)
+            self.assertEqual(bridge.find_formatter(server, {"PATH": "/other"}), local)
+            local.unlink()
+            with patch.object(bridge.shutil, "which", return_value="/global/bin/mblack") as which:
+                self.assertEqual(
+                    bridge.find_formatter(server, {"PATH": "/global/bin"}),
+                    Path("/global/bin/mblack"),
+                )
+                which.assert_called_once_with("mblack", path="/global/bin")
+
     def test_default_download_uses_matching_release_and_reuses_cache(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -562,7 +617,7 @@ class LspClient:
                 self.messages.put(None)
 
         threading.Thread(target=read, daemon=True).start()
-        self.request(
+        self.initialize_result = self.request(
             "initialize",
             {
                 "processId": None,
@@ -647,6 +702,51 @@ class LspClient:
 
 
 class ProxyTests(unittest.TestCase):
+    def test_mblack_capability_and_unsaved_document_formatting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            formatter = root / "mblack"
+            formatter.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "text = sys.stdin.read()\n"
+                "sys.stdout.write(text.replace('value=1', 'value = 1'))\n"
+            )
+            formatter.chmod(0o755)
+            wrapper = (
+                f"import sys; sys.path.insert(0, {str(Path(bridge.__file__).parent)!r})\n"
+                "import mojo_lsp\n"
+                f"mojo_lsp.find_formatter = lambda *args: mojo_lsp.Path({str(formatter)!r})\n"
+                "sys.exit(mojo_lsp.main() or 0)\n"
+            )
+            command = [
+                sys.executable,
+                "-c",
+                wrapper,
+                "--server",
+                sys.executable,
+                "--workspace",
+                str(root),
+                "--cache",
+                str(root / ".cache"),
+                "--",
+                str(Path(__file__).with_name("fake_server.py")),
+            ]
+            client = LspClient(command, root, {"zed_mojo": {"download_stdlib": False}})
+            try:
+                self.assertIs(
+                    client.initialize_result["capabilities"]["documentFormattingProvider"], True
+                )
+                text = "fn main():\n    var value=1\n"
+                uri = client.open(root / "main.mojo", text)
+                edits = client.request(
+                    "textDocument/formatting",
+                    {"textDocument": {"uri": uri}, "options": {"tabSize": 4}},
+                )
+                self.assertEqual(apply_edit(text, edits[0]), text.replace("value=1", "value = 1"))
+            finally:
+                client.close()
+
     def test_native_progress_handshake_disabled_on_launch_and_recovery(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
