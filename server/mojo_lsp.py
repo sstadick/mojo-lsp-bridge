@@ -23,7 +23,8 @@ import threading
 import time
 import tokenize
 import uuid
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 IDENTIFIER = r"[A-Za-z_][A-Za-z_0-9]*"
 UNKNOWN = re.compile(r"use of unknown declaration '(" + IDENTIFIER + r")'")
@@ -363,7 +364,9 @@ def ensure_stdlib(server, config, cache, paths, workspace):
     version_output = subprocess.run(
         [server, "--mojo-version"], capture_output=True, text=True, timeout=10, check=True
     ).stdout
-    match = re.fullmatch(r"Mojo (\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)\s*", version_output)
+    match = re.fullmatch(
+        r"Mojo (\d+\.\d+\.\d+(?:(?:a|b|rc)\d+|\.dev\d{10})?)\s*", version_output
+    )
     if not match:
         raise ValueError(
             "cannot match this compiler to a release; set zed_mojo.stdlib_path for nightly/custom Mojo builds"
@@ -376,36 +379,44 @@ def ensure_stdlib(server, config, cache, paths, workspace):
         raise ValueError(
             "Git is required to download stdlib sources; alternatively set zed_mojo.stdlib_path"
         )
+    revision = f"refs/tags/mojo/v{version}"
+    if ".dev" in version:
+        # Nightlies have no release tags. Match the published release pin,
+        # never today's main or a stable tag with a similar version number.
+        title = f"[Release] Pin lockfiles to Mojo {version},"
+        query = urlencode({"q": f'repo:modular/modular "Pin lockfiles to Mojo {version}"'})
+        request = Request(
+            f"https://api.github.com/search/commits?{query}",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "zed-mojo"},
+        )
+        with urlopen(request, timeout=30) as response:
+            releases = json.load(response)
+        matches = {
+            item["sha"] for item in releases.get("items", [])
+            if item.get("commit", {}).get("message", "").startswith(title)
+            and re.fullmatch(r"[0-9a-f]{40}", item.get("sha", ""))
+        }
+        if releases.get("incomplete_results") or len(matches) != 1:
+            raise ValueError(
+                f"cannot uniquely match nightly {version}; set zed_mojo.stdlib_path"
+            )
+        revision = matches.pop()
     log(f"Downloading stdlib sources for Mojo {version} (once per version)")
     cache.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="stdlib-download-", dir=cache) as temporary:
         checkout = Path(temporary) / "modular"
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--filter=blob:none",
-                "--sparse",
-                "--branch",
-                f"mojo/v{version}",
-                "https://github.com/modular/modular.git",
-                str(checkout),
-            ],
-            capture_output=True,
-            check=True,
-            timeout=60,
-        )
-        subprocess.run(
+        for command in (
+            ["git", "init", str(checkout)],
+            ["git", "-C", str(checkout), "remote", "add", "origin",
+             "https://github.com/modular/modular.git"],
             ["git", "-C", str(checkout), "sparse-checkout", "set", "mojo/stdlib", "Mojo/stdlib"],
-            capture_output=True,
-            check=True,
-            timeout=60,
-        )
+            ["git", "-C", str(checkout), "fetch", "--depth=1", "--filter=blob:none", "origin", revision],
+            ["git", "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
+        ):
+            subprocess.run(command, capture_output=True, check=True, timeout=60)
         if not stdlib_root(checkout):
             raise ValueError(
-                f"release mojo/v{version} does not contain expected stdlib sources; set zed_mojo.stdlib_path"
+                f"release {version} does not contain expected stdlib sources; set zed_mojo.stdlib_path"
             )
         try:
             checkout.rename(destination)

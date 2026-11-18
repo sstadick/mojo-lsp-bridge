@@ -49,7 +49,7 @@ pixi add mojo
 
 Open that project in Zed and open a `.mojo` file. For SSH development, create/install the project on the server; keep the dev extension checkout and Rust build tools on the local computer. Python 3.10+ and Git must be available on the server. No machine-specific paths, Pixi activation, or `.zed` directory are needed. Different projects select their own installed compiler; matching stdlib sources are cached once per compiler release.
 
-For existing projects, run `pixi install` first. Discovery does not install or change your project's dependencies. Non-default Pixi environments and installations outside `.pixi/envs/default` use `PATH` or the optional override below. Nightly/custom compilers without a matching public release tag need matching sources supplied explicitly; offline first use also needs a pre-populated source cache or source override.
+For existing projects, run `pixi install` first. Discovery does not install or change your project's dependencies. Non-default Pixi environments and installations outside `.pixi/envs/default` use `PATH` or the optional override below. Published nightlies use their exact public release-pinning commit for stdlib sources. Custom builds or nightlies without a matching public pin need sources supplied explicitly; offline first use also needs a pre-populated source cache or source override.
 
 After rebuilding a dev extension, wait for Zed to upload it to the SSH server, then run `editor: restart language server` with a Mojo file focused if the server has stopped. This is a dev-extension reload step, not per-project configuration.
 
@@ -122,15 +122,23 @@ The bridge's pipe reader avoids Python's buffered-stdin shutdown lock, so a nati
 
 ### Standard-library navigation
 
-On first use, the extension detects the server's Mojo version and caches the matching `mojo/v<version>` tag from [`modular/modular`](https://github.com/modular/modular), using a sparse checkout of the standard library. It adds those sources to the language server's search paths so native go-to-definition works for stdlib functions, types, built-ins, and methods. Project definitions still come from the same Mojo language server. First startup includes the source download; later starts reuse the cache.
+On first use, the extension detects the server's Mojo version and caches the matching `mojo/v<version>` tag from [`modular/modular`](https://github.com/modular/modular), using a sparse checkout of the standard library. For nightly versions such as `1.3.0.dev2026111705`, it queries GitHub's public commit search for the exact `[Release] Pin lockfiles to Mojo <version>, ...` commit and checks out that immutable revision. Both `mojo/stdlib` and `Mojo/stdlib` layouts are supported. It adds those sources to the language server's search paths so native go-to-definition works for stdlib functions, types, built-ins, and methods. Project definitions still come from the same Mojo language server. First startup includes the source download; later starts reuse the cache without GitHub queries.
 
-An existing stdlib source directory on your import path is used before downloading. For an offline setup, a nightly/custom compiler, or a local stdlib checkout, set `stdlib_path` to the directory containing `std/`. Use sources matching your compiler: the extension deliberately does not substitute `main` for an unknown release. If downloading fails, the original server still starts and logs how to configure local sources.
+An existing stdlib source directory on your import path is used before downloading. For an offline setup, an unpublished nightly/custom compiler, or a local stdlib checkout, set `stdlib_path` to the directory containing `std/`. Use sources matching your compiler: the extension deliberately does not substitute `main` for an unknown release. Missing or ambiguous release pins, GitHub API rate limits, and download failures leave the native server running and log how to configure local sources.
+
+### Use the bridge from Neovim
+
+The Python bridge speaks standard LSP over stdin/stdout; it is not Zed-specific. Launch it as `python3 /path/to/zed_mojo/server/mojo_lsp.py --server /absolute/path/to/mojo-lsp-server --workspace /path/to/project --cache /path/to/cache`. Pass native server arguments after `--`, and bridge settings through the client's `initializationOptions.zed_mojo`. The client must select the project's native executable and workspace; Zed's Rust launcher normally handles that discovery. No Rust build is required for Neovim.
+
+The [ai_dotfiles Neovim config](https://github.com/sstadick/ai_dotfiles) uses `~/dev/zed_mojo/server/mojo_lsp.py` and `mojo.nvim`'s per-project environment discovery, with sources cached under Neovim's cache directory in `mojo-lsp`. Only one Mojo client runs per project. Formatting goes through the bridge's `mblack` support, including unsaved changes; the plugin's separate `mojo format` adapter is disabled while the bridge is present.
 
 ### Import quick fixes
 
 When Mojo reports an unknown declaration, open Zed's code-actions menu on the underlined symbol and choose **Import `<symbol>` from `<module>`**. For example, `sqrt(1.0)` offers `from std.math import sqrt`. The edit inserts an import while preserving the file's header, module docstring, existing imports, and line endings. Existing Mojo quick fixes remain available.
 
 The import index searches the worktree, stdlib sources, `-I` directories, Mojo's configured import paths, `MOJO_IMPORT_PATH`, and the selected compiler's `lib/mojo` directory. Source packages include public declarations and re-exports; compiled packages are indexed with the matching `mojo doc` command and cached. Packages must already be installed or available on an import path.
+
+Mojo 1.2.0 can fail `mojo doc` on compiled packages with `invalid redefinition of '##__mojo_closure__##'`, leaving those packages unindexed. Source and stdlib import fixes still work. The compiled-package integration test passes with nightly `1.3.0.dev2026111705`.
 
 Compiler documentation metadata omits compiled-package re-exports. The extension checks parent-package imports in batches and ranks confirmed shorter paths first (for example, `mojo_raylib` before `mojo_raylib.raw.types`). These checks resolve imports without running or linking package code. The results persist across language-server restarts and are invalidated when installed package artifacts, compiler, or import-path configuration change. Editing an unrelated project file does not rerun successful package-wide checks.
 

@@ -471,13 +471,11 @@ class SetupTests(unittest.TestCase):
             def run(command, **kwargs):
                 if command[1:] == ["--mojo-version"]:
                     return subprocess.CompletedProcess(command, 0, "Mojo 1.0.0\n", "")
-                if command[1] == "clone":
-                    self.assertIn("mojo/v1.0.0", command)
-                    self.assertIn("--sparse", command)
-                    (Path(command[-1]) / "mojo/stdlib/std").mkdir(parents=True)
-                    (Path(command[-1]) / "mojo/stdlib/std/__init__.mojo").touch()
-                else:
-                    self.assertEqual(command[3:5], ["sparse-checkout", "set"])
+                if "fetch" in command:
+                    self.assertEqual(command[-1], "refs/tags/mojo/v1.0.0")
+                if "checkout" in command:
+                    (Path(command[2]) / "mojo/stdlib/std").mkdir(parents=True)
+                    (Path(command[2]) / "mojo/stdlib/std/__init__.mojo").touch()
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             with patch.object(subprocess, "run", side_effect=run) as commands, patch.object(
@@ -552,14 +550,78 @@ class SetupTests(unittest.TestCase):
                 with patch.dict(os.environ, {"MODULAR_MOJO_MAX_IMPORT_PATH": "/custom,/other"}):
                     self.assertEqual(bridge.configured_import_paths(), ["/custom", "/other"])
 
+    def test_nightly_download_pins_sources_and_reuses_cache(self):
+        # A real Git history makes selecting main instead of the release pin
+        # observable: the two revisions contain different stdlib contents.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            upstream = root / "upstream"
+            subprocess.run(["git", "init", str(upstream)], check=True, capture_output=True)
+            source = upstream / "Mojo/stdlib/std/__init__.mojo"
+            source.parent.mkdir(parents=True)
+
+            def commit(text):
+                source.write_text(text)
+                subprocess.run(["git", "-C", str(upstream), "add", "."], check=True)
+                subprocess.run([
+                    "git", "-C", str(upstream), "-c", "user.name=Test",
+                    "-c", "user.email=test@example.com", "commit", "-m", text,
+                ], check=True, capture_output=True)
+                return subprocess.check_output(
+                    ["git", "-C", str(upstream), "rev-parse", "HEAD"], text=True
+                ).strip()
+
+            revision = commit("# matching nightly\n")
+            commit("# incompatible main\n")
+            version = "1.3.0.dev2026111705"
+            releases = {"items": [{
+                "sha": revision,
+                "commit": {"message": f"[Release] Pin lockfiles to Mojo {version}, MAX 26.8"},
+            }]}
+            run = subprocess.run
+
+            def local_run(command, **kwargs):
+                if command == ["mojo-lsp-server", "--mojo-version"]:
+                    return subprocess.CompletedProcess(command, 0, f"Mojo {version}\n", "")
+                command = [
+                    upstream.as_uri() if arg == "https://github.com/modular/modular.git" else arg
+                    for arg in command
+                ]
+                return run(command, **kwargs)
+
+            with patch.object(subprocess, "run", side_effect=local_run), patch.object(
+                bridge, "urlopen", return_value=io.BytesIO(json.dumps(releases).encode())
+            ):
+                sources = bridge.ensure_stdlib("mojo-lsp-server", {}, root / "cache", [], root)
+                self.assertEqual((sources / "std/__init__.mojo").read_text(), "# matching nightly\n")
+                with patch.object(bridge, "urlopen", side_effect=AssertionError("cache must be offline")):
+                    self.assertEqual(
+                        bridge.ensure_stdlib("mojo-lsp-server", {}, root / "cache", [], root), sources
+                    )
+
     def test_nightly_never_downloads_unmatched_release(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            result = subprocess.CompletedProcess([], 0, "Mojo 1.1.0.dev20260905\n", "")
-            with patch.object(subprocess, "run", return_value=result) as run:
-                with self.assertRaisesRegex(ValueError, "nightly/custom"):
-                    bridge.ensure_stdlib("mojo-lsp-server", {}, root, [], root)
-                self.assertEqual(run.call_count, 1)
+            result = subprocess.CompletedProcess([], 0, "Mojo 1.3.0.dev2026111705\n", "")
+            pin = {"sha": "a" * 40, "commit": {
+                "message": "[Release] Pin lockfiles to Mojo 1.3.0.dev2026111705, MAX 26.8",
+            }}
+            unrelated = {"sha": "c" * 40, "commit": {
+                "message": "[Release] Pin lockfiles to Mojo 1.3.0.dev2026111605, MAX 26.8",
+            }}
+            for releases in (
+                {"items": [unrelated]},
+                {"items": [pin], "incomplete_results": True},
+                {"items": [pin, {**pin, "sha": "b" * 40}]},
+            ):
+                with self.subTest(releases=releases), patch.object(
+                    subprocess, "run", return_value=result
+                ) as run, patch.object(
+                    bridge, "urlopen", return_value=io.BytesIO(json.dumps(releases).encode())
+                ):
+                    with self.assertRaisesRegex(ValueError, "cannot uniquely match nightly"):
+                        bridge.ensure_stdlib("mojo-lsp-server", {}, root, [], root)
+                    self.assertEqual(run.call_count, 1)
 
 
 class TransportTests(unittest.TestCase):
@@ -1138,7 +1200,7 @@ class ZeroConfigurationIntegrationTests(unittest.TestCase):
                             "missing_value" in item["message"]
                             for item in client.diagnostics[broken]["diagnostics"]
                         ))
-                        self.assertTrue(list(cache.glob("stdlib-*/mojo/stdlib/std/__init__.mojo")))
+                        self.assertTrue(any(bridge.stdlib_root(path) for path in cache.glob("stdlib-*")))
                         client.stderr.seek(0)
                         log = client.stderr.read().decode()
                         self.assertEqual("Downloading stdlib sources" in log, cold)
