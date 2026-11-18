@@ -1,8 +1,10 @@
-# Mojo language support for Zed
+# Mojo LSP Bridge
 
-Zed extension that adds Mojo language support for files with the `.mojo` suffix.
+An editor-independent bridge for Mojo's native language server, with stdlib navigation, import quick fixes, formatting, and crash recovery. Includes a Zed extension and supports Neovim and other LSP clients.
 
-This fork is maintained at [`sstadick/zed_mojo`](https://github.com/sstadick/zed_mojo), based on [`vadim-su/zed_mojo`](https://github.com/vadim-su/zed_mojo).
+Maintained at [`sstadick/mojo-lsp-bridge`](https://github.com/sstadick/mojo-lsp-bridge), originally forked from [`vadim-su/zed_mojo`](https://github.com/vadim-su/zed_mojo).
+
+Previously named `sstadick/zed_mojo`. Existing `initializationOptions.zed_mojo` settings and the Zed extension ID `mojo` remain unchanged. If you rename an existing checkout, update editor launch paths and reselect the directory for Zed's dev extension.
 
 ## What is included
 
@@ -26,7 +28,7 @@ Have a working Mojo installation, Python 3.10 or newer (`python3`), and Git avai
 1. Open Zed.
 2. Run `zed: extensions` from the command palette.
 3. Click `Install Dev Extension`.
-4. Select this repository directory: `zed_mojo`.
+4. Select this repository directory: `mojo-lsp-bridge`.
 5. Open a `.mojo` file.
 
 Installing this checkout as a dev extension replaces the published Mojo extension. Zed shows the published version as "Overridden by dev extension" and uses this local checkout for future development. After changing the extension, use its `Rebuild` button on the extensions page.
@@ -128,9 +130,9 @@ An existing stdlib source directory on your import path is used before downloadi
 
 ### Use the bridge from Neovim
 
-The Python bridge speaks standard LSP over stdin/stdout; it is not Zed-specific. Launch it as `python3 /path/to/zed_mojo/server/mojo_lsp.py --server /absolute/path/to/mojo-lsp-server --workspace /path/to/project --cache /path/to/cache`. Pass native server arguments after `--`, and bridge settings through the client's `initializationOptions.zed_mojo`. The client must select the project's native executable and workspace; Zed's Rust launcher normally handles that discovery. No Rust build is required for Neovim.
+The Python bridge speaks standard LSP over stdin/stdout; it is not Zed-specific. Launch it as `python3 /path/to/mojo-lsp-bridge/server/mojo_lsp.py --server /absolute/path/to/mojo-lsp-server --workspace /path/to/project --cache /path/to/cache`. Pass native server arguments after `--`, and bridge settings through the client's `initializationOptions.zed_mojo`. The client must select the project's native executable and workspace; Zed's Rust launcher normally handles that discovery. No Rust build is required for Neovim.
 
-The [ai_dotfiles Neovim config](https://github.com/sstadick/ai_dotfiles) uses `~/dev/zed_mojo/server/mojo_lsp.py` and `mojo.nvim`'s per-project environment discovery, with sources cached under Neovim's cache directory in `mojo-lsp`. Only one Mojo client runs per project. Formatting goes through the bridge's `mblack` support, including unsaved changes; the plugin's separate `mojo format` adapter is disabled while the bridge is present.
+The [ai_dotfiles Neovim config](https://github.com/sstadick/ai_dotfiles) uses `~/dev/mojo-lsp-bridge/server/mojo_lsp.py` and `mojo.nvim`'s per-project environment discovery, with sources cached under Neovim's cache directory in `mojo-lsp`. Only one Mojo client runs per project. Formatting goes through the bridge's `mblack` support, including unsaved changes; the plugin's separate `mojo format` adapter is disabled while the bridge is present.
 
 ### Import quick fixes
 
