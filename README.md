@@ -1,6 +1,6 @@
 # Mojo LSP Bridge
 
-An editor-independent bridge for Mojo's native language server, with stdlib navigation, import quick fixes, formatting, and crash recovery. Includes a Zed extension and supports Neovim and other LSP clients.
+An editor-independent bridge for Mojo's native language server, with stdlib navigation, import quick fixes, formatting, and crash recovery. Includes Zed and VS Code extensions and supports Neovim and other LSP clients.
 
 Maintained at [`sstadick/mojo-lsp-bridge`](https://github.com/sstadick/mojo-lsp-bridge), originally forked from [`vadim-su/zed_mojo`](https://github.com/vadim-su/zed_mojo).
 
@@ -34,6 +34,14 @@ Have a working Mojo installation, Python 3.10 or newer (`python3`), and Git avai
 Installing this checkout as a dev extension replaces the published Mojo extension. Zed shows the published version as "Overridden by dev extension" and uses this local checkout for future development. After changing the extension, use its `Rebuild` button on the extensions page.
 
 If the extension does not appear immediately, reload Zed with `zed: reload window`.
+
+## Install locally in VS Code
+
+Build the VSIX with Node.js 22+: run `npm ci && npm run package` in [`vscode/`](vscode/). Then use **Extensions: Install from VSIX…** to select `vscode/mojo-lsp-bridge-0.1.0.vsix`.
+
+**Disable the official Mojo/Mojo Nightly extension for this workspace and reload first.** It has no custom-server setting, so this extension runs its own client and refuses to start alongside it. This supplies language-server features, not the official extension's debugger or run commands. The official extension already supports formatting.
+
+Open a Mojo project folder. The extension discovers its `.pixi/envs/default` or `.venv` compiler, bundles the same Python bridge used by Zed/Neovim, and downloads matching sources automatically. Python 3.10+ and Git are required; Rust and Node.js are not needed to use the installed VSIX. Remote-SSH, WSL, and containers run the extension on the remote development machine. See the [VS Code guide](vscode/README.md) for installation, settings, multi-root workspaces, and tests.
 
 ## Mojo language server
 
