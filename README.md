@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> **Development has moved to [Mojoverse](https://github.com/sstadick/mojoverse).**
+> See [Mojo LSP Bridge in Mojoverse](https://github.com/sstadick/mojoverse/tree/main/bins/mojo-lsp-bridge)
+> for current code, documentation, and installation instructions. Please open new issues and
+> pull requests in Mojoverse.
+>
+> This repository is retained for reference; the README below describes the legacy standalone version.
+
 # Mojo LSP Bridge
 
 An editor-independent bridge for Mojo's native language server, with stdlib navigation, import quick fixes, formatting, and crash recovery. Includes Zed and VS Code extensions and supports Neovim and other LSP clients.
